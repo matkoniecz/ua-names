@@ -2,14 +2,50 @@ import time
 import csv
 
 import osm_bot_abstraction_layer.osm_bot_abstraction_layer as osm_bot_abstraction_layer
+import osmapi
+
+def is_imprecise_ukrainian_name(name_uk, name):
+    if name_uk in ["шкільний комплекс", "професійна школа"]:
+        return True
+    if name_uk == "Загальноосвітній ліцей" and name.lower() != "liceum ogólnokształcące":
+        return True
+    if name_uk == "Початкова школа" and name.lower() != "szkoła podstawowa":
+        return True
+    return False
 
 def main(make_edits):
     report_of_problems = ""
-    for file in ['krew.csv', 'szpitale.csv', 'pks.csv', 'community_centre.csv', 'miasta.csv']:
+    for file in ["szkoły.csv", 'wioski_przygraniczne.csv', 'urzędy_wojewódzkie.csv', 'miasta.csv']: #'lotniska.csv']: #'krew.csv', 'szpitale.csv', 'pks.csv', 'community_centre.csv', 'miasta.csv']: # 'social_facility_second.csv' 'stacje_kolejowe.csv
         report_of_problems += "\n------\n" + file + "\n"
+        changeset = None
         show_overpass_query(file)
-        if make_edits:
-            changeset = build_changeset(False, "dodawanie nazw ukraińskich i rosyjskich (edycje osób które zgodziły się na dystrybucje ich pracy ale edytowały listę nazw a nie bezpośrednio w edytorze OSM)", "https://forum.openstreetmap.org/viewtopic.php?id=75019", "https://wiki.openstreetmap.org/wiki/Mechanical_Edits/Mateusz_Konieczny_-_bot_account/name_translation_proxy_ukraine_refugee_crisis")
+
+        names_uk = []
+        names_ru = []
+        with open(file, newline='') as csvfile:
+            spamreader = csv.reader(csvfile, delimiter=',', quotechar='"')
+            row_index = 0
+            for row in spamreader:
+                if row_index == 0:
+                    matcher = build_id_to_index_number(row)
+                else:
+                    name_uk = None
+                    name_ru = None
+                    name = row[matcher.get("name")]
+                    if matcher.get("name:uk") != None:
+                        name_uk = row[matcher.get("name:uk")].replace(" (місто)", "") # drop "(city) explanation"
+                    if matcher.get("name:ru") != None:
+                        name_ru = row[matcher.get("name:ru")].replace(" (Польша)", "") # drop "(city) explanation"
+                    if name_ru in names_ru and name_ru != None:
+                        print("REPEATING", name_ru)
+                    if name_uk in names_uk and name_uk != None:
+                        if is_imprecise_ukrainian_name(name_uk, name) == False:
+                            print("REPEATING", name_uk, "FOR", name)
+                    if name_ru != None:
+                        names_ru.append(name_ru)
+                    if name_uk != None:
+                        names_uk.append(name_uk)
+                row_index += 1
         with open(file, newline='') as csvfile:
             print("aaa")
             spamreader = csv.reader(csvfile, delimiter=',', quotechar='"')
@@ -24,21 +60,40 @@ def main(make_edits):
                     name = row[matcher["name"]]
                     name_ru = None
                     if matcher.get("name:ru") != None:
-                        name_ru = row[matcher.get("name:ru")]
+                        name_ru = row[matcher.get("name:ru")].replace(" (Польша)", "") # drop "(city) explanation"
                     name_uk = None
                     if matcher.get("name:uk") != None:
-                        name_uk = row[matcher.get("name:uk")]
+                        name_uk = row[matcher.get("name:uk")].replace(" (місто)", "") # drop "(city) explanation"
+                    if name_uk in ["Сувчина" # https://www.openstreetmap.org/node/31948375
+                        "Стубно", # https://www.openstreetmap.org/node/31948515 
+                        "Клецко", # https://www.openstreetmap.org/node/563338229
+                        ]:
+                        name_uk = None
+                    
+                    if is_imprecise_ukrainian_name(name_uk, name):
+                        error = "SKIPPING IMPRECISE NAME ( " + link + " )!\n"
+                        if name_uk != None:
+                            error += "Provided Ukrainian name:\n" + name_uk.strip() + "\n"
+                        else:
+                            error += "No provided Ukrainian name"
+                        if name_ru:
+                            error += "Provided Russian name:\n" + name_ru.strip() + "\n"
+                        else:
+                            error += "No provided Russian name"
+                        report_of_problems += error
+                        print(error + "\n")
+                        name_uk = None
                     element = osm_bot_abstraction_layer.get_data(osm_element_id, osm_element_type)
                     if element == None:
                         error = "NO ELEMENT AT ALL ( " + link + " )!\n"
                         report_of_problems += error
-                        print(error)
+                        print(error + "\n")
                         skip_edit = True
                         continue # no need to check anything else
                     if "tag" not in element:
                         error = "NO TAGS AT ALL ( " + link + " )!\n"
                         report_of_problems += error
-                        print(error)
+                        print(error + "\n")
                         skip_edit = True
                         continue # no need to check anything else
                     tags = element["tag"]
@@ -47,8 +102,16 @@ def main(make_edits):
                     link = "https://www.openstreetmap.org/" + osm_element_type + "/" + osm_element_id
                     if "name" not in tags:
                         error = "NAME MISSING ( " + link + " )!\n"
+                        if name_uk != None:
+                            error += "Provided Ukrainian name:\n" + name_uk.strip() + "\n"
+                        else:
+                            error += "No provided Ukrainian name"
+                        if name_ru:
+                            error += "Provided Russian name:\n" + name_ru.strip() + "\n"
+                        else:
+                            error += "No provided Russian name"
                         report_of_problems += error
-                        print(error)
+                        print(error + "\n")
                         skip_edit = True
                     elif name != tags["name"]:
                         expanded_name = tags["name"]
@@ -63,28 +126,54 @@ def main(make_edits):
                             error = "NAME MISMATCH ( " + link + " )!\n"
                             error += "Being translated:\n" + name + "\n"
                             error += "In OSM:\n" + tags["name"] + "\n"
-                            error += "expanded_name:\n" + expanded_name + "\n\n"
+                            error += "expanded_name:\n" + expanded_name + "\n"
+                            if name_uk != None:
+                                error += "Provided Ukrainian name:\n" + name_uk.strip() + "\n"
+                            else:
+                                error += "No provided Ukrainian name"
+                            if name_ru:
+                                error += "Provided Russian name:\n" + name_ru.strip() + "\n"
+                            else:
+                                error += "No provided Russian name"
 
                             report_of_problems += error
-                            print(error)
+                            print(error + "\n")
                             skip_edit = True
                     if name_uk != None:
                         if "name:uk" in tags and name_uk.strip() != tags["name:uk"].strip():
-                            error = "NAME MISMATCH ( " + link + " )!\n"
+                            error = "UKRAINIAN NAME MISMATCH ( " + link + " )!\n"
                             error += "Provided:\n" + name_uk.strip() + "\n"
-                            error += "In OSM:\n" + tags["name:uk"].strip() + "\n\n"
+                            error += "In OSM:\n" + tags["name:uk"].strip() + "\n"
+                            error += "Translated:\n" + tags["name"] + "\n"
+                            if name_uk != None:
+                                error += "Provided Ukrainian name:\n" + name_uk.strip() + "\n"
+                            else:
+                                error += "No provided Ukrainian name"
+                            if name_ru:
+                                error += "Provided Russian name:\n" + name_ru.strip() + "\n"
+                            else:
+                                error += "No provided Russian name"
 
                             report_of_problems += error
-                            print(error)
+                            print(error + "\n")
                             skip_edit = True
                     if name_ru != None:
                         if "name:ru" in tags and name_ru.strip() != tags["name:ru"].strip():
-                            error = "NAME MISMATCH ( " + link + " )!\n"
+                            error = "RUSSIAN NAME MISMATCH ( " + link + " )!\n"
                             error += "Provided:\n" + name_ru.strip() + "\n"
-                            error += "In OSM:\n" + tags["name:ru"].strip() + "\n\n"
+                            error += "In OSM:\n" + tags["name:ru"].strip() + "\n"
+                            error += "Translated:\n" + tags["name"] + "\n"
+                            if name_uk != None:
+                                error += "Provided Ukrainian name:\n" + name_uk.strip() + "\n"
+                            else:
+                                error += "No provided Ukrainian name"
+                            if name_ru:
+                                error += "Provided Russian name:\n" + name_ru.strip() + "\n"
+                            else:
+                                error += "No provided Russian name"
 
                             report_of_problems += error
-                            print(error)
+                            print(error + "\n")
                             skip_edit = True
 
                     if make_edits == False or skip_edit:
@@ -113,11 +202,14 @@ def main(make_edits):
                     if useful_edit == False:
                         continue
 
+                    if changeset == None:
+                        description = "dodawanie nazw ukraińskich i rosyjskich (edycje osób które zgodziły się na dystrybucje ich pracy ale edytowały listę nazw a nie bezpośrednio w edytorze OSM)"
+                        description += " - " + file.replace("_", " ").replace(".csv", "")
+                        changeset = build_changeset(False, description, "https://forum.openstreetmap.org/viewtopic.php?id=75019", "https://wiki.openstreetmap.org/wiki/Mechanical_Edits/Mateusz_Konieczny_-_bot_account/name_translation_proxy_ukraine_refugee_crisis")
                     osm_bot_abstraction_layer.update_element(changeset, osm_element_type, element)
-                    continue
                 row_index += 1
         try:
-            if make_edits:
+            if make_edits and changeset != None:
                 changeset.ChangesetClose()
         except osmapi.ApiError as e:
             if is_exception_about_already_closed_changeset(e):
